@@ -1,0 +1,20 @@
+{
+  "name": "emmyconceptng/laravel-ng-postcode",
+  "description": "Parse, validate and format Nigeria's NIPOST digital postcode in Laravel.",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Emmanurl O Kolawole",
+      "email": "emmyconceptng@gmail.com"
+    }
+  ],
+  "require": {
+    "php": "^8.2"
+  },
+  "autoload": {
+    "psr-4": {
+      "EmmanuelKolawole\\NgPostcode\\": "src/"
+    }
+  }
+}
