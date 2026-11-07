@@ -2,6 +2,7 @@
 
 namespace EmmanuelKolawole\NgPostcode;
 
+use EmmanuelKolawole\NgPostcode\Api\NipostClient;
 use EmmanuelKolawole\NgPostcode\Rules\NigerianPostcode;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\ServiceProvider;
@@ -12,6 +13,15 @@ final class NgPostcodeServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__ . '/../config/ng-postcode.php', 'ng-postcode');
+
+        $this->app->singleton(NipostClient::class, function ($app) {
+            return new NipostClient(
+                apiKey: config('ng-postcode.api_key'),
+                baseUrl: config('ng-postcode.base_url'),
+                timeout: config('ng-postcode.timeout'),
+                maxLevel: config('ng-postcode.max_level'),
+            );
+        });
     }
 
     public function boot(): void
