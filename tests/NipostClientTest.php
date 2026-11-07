@@ -2,13 +2,21 @@
 
 namespace EmmanuelKolawole\NgPostcode\Tests;
 
+use EmmanuelKolawole\NgPostcode\Api\AdministrativeAddress;
+use EmmanuelKolawole\NgPostcode\Api\LookupResult;
 use EmmanuelKolawole\NgPostcode\Api\NipostClient;
+use EmmanuelKolawole\NgPostcode\Exceptions\InsufficientCredits;
+use EmmanuelKolawole\NgPostcode\Exceptions\InvalidApiKey;
+use EmmanuelKolawole\NgPostcode\Exceptions\LevelNotGranted;
 use EmmanuelKolawole\NgPostcode\Exceptions\LookupLevelNotAllowed;
 use EmmanuelKolawole\NgPostcode\Exceptions\MissingApiKey;
+use EmmanuelKolawole\NgPostcode\Exceptions\NipostException;
+use EmmanuelKolawole\NgPostcode\Exceptions\NipostUnavailable;
+use EmmanuelKolawole\NgPostcode\Exceptions\RateLimitExceeded;
 use EmmanuelKolawole\NgPostcode\NgPostcodeServiceProvider;
 use EmmanuelKolawole\NgPostcode\Postcode;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
-use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
 use Orchestra\Testbench\TestCase;
@@ -35,22 +43,67 @@ final class NipostClientTest extends TestCase
         return new NipostClient($apiKey, 'https://api.postcode.gov.ng', 5, $maxLevel);
     }
 
-    private function fakeLookup(): void
+    /** A level 3 lookup response, shaped like the quickstart example in NIPOST's docs. */
+    private function level3Data(): array
+    {
+        return [
+            'postcode' => self::SANDBOX_CODE,
+            'valid' => true,
+            'status' => 'active',
+            'verified' => true,
+            'administrative_address' => [
+                'state_name' => 'Federal Capital Territory',
+                'lga_name' => 'Abuja Municipal',
+                'locality_name' => 'Kubwa',
+                'zone' => 'North Central',
+            ],
+            'recent_house_address' => [
+                'recent' => '27 Example Street, Kubwa, Abuja',
+            ],
+            'building_use_status' => 'residential',
+        ];
+    }
+
+    private function fakeLookup(?array $data = null): void
     {
         Http::fake([
             'api.postcode.gov.ng/v1/lookup*' => Http::response([
-                'data' => ['postcode' => self::SANDBOX_CODE, 'valid' => true],
+                'data' => $data ?? ['postcode' => self::SANDBOX_CODE, 'valid' => true, 'status' => 'active'],
             ]),
         ]);
     }
 
-    public function test_lookup_sends_the_key_and_returns_data(): void
+    private function fakeError(int $status, array|string $body): void
+    {
+        Http::fake(['api.postcode.gov.ng/v1/lookup*' => Http::response($body, $status)]);
+    }
+
+    private function lookup(int $level = 1): LookupResult
+    {
+        return $this->client(maxLevel: 3)->lookup(Postcode::parse(self::SANDBOX_CODE), $level);
+    }
+
+    /** Runs a lookup and returns the exception it throws, failing the test if none is thrown. */
+    private function lookupException(): NipostException
+    {
+        try {
+            $this->lookup();
+        } catch (NipostException $e) {
+            return $e;
+        }
+
+        $this->fail('Expected a NipostException to be thrown.');
+    }
+
+    public function test_lookup_sends_the_key_and_returns_a_lookup_result(): void
     {
         $this->fakeLookup();
 
-        $data = $this->client()->lookup(Postcode::parse(self::SANDBOX_CODE));
+        $result = $this->client()->lookup(Postcode::parse(self::SANDBOX_CODE));
 
-        $this->assertTrue($data['valid']);
+        $this->assertInstanceOf(LookupResult::class, $result);
+        $this->assertSame(self::SANDBOX_CODE, $result->postcode);
+        $this->assertTrue($result->valid);
 
         Http::assertSent(
             fn(Request $request) =>
@@ -108,15 +161,146 @@ final class NipostClientTest extends TestCase
         }
     }
 
-    public function test_api_error_response_throws(): void
+    public function test_not_found_is_a_result_not_an_exception(): void
     {
-        Http::fake([
-            'api.postcode.gov.ng/v1/lookup*' => Http::response(['message' => 'Unauthorized'], 401),
-        ]);
+        $this->fakeLookup(['postcode' => self::SANDBOX_CODE, 'valid' => false, 'status' => 'not_found']);
 
-        $this->expectException(RequestException::class);
+        $result = $this->lookup();
 
-        $this->client()->lookup(Postcode::parse(self::SANDBOX_CODE));
+        $this->assertFalse($result->valid);
+        $this->assertSame('not_found', $result->status);
+    }
+
+    public function test_level_3_response_fills_the_detail_fields(): void
+    {
+        $this->fakeLookup($this->level3Data());
+
+        $result = $this->lookup(level: 3);
+
+        $this->assertTrue($result->verified);
+        $this->assertInstanceOf(AdministrativeAddress::class, $result->administrativeAddress);
+        $this->assertSame('Federal Capital Territory', $result->administrativeAddress->stateName);
+        $this->assertSame('Abuja Municipal', $result->administrativeAddress->lgaName);
+        $this->assertSame('Kubwa', $result->administrativeAddress->localityName);
+        $this->assertSame('North Central', $result->administrativeAddress->zone);
+        $this->assertSame('27 Example Street, Kubwa, Abuja', $result->recentHouseAddress);
+        $this->assertSame('residential', $result->buildingUseStatus);
+    }
+
+    public function test_level_1_response_leaves_the_detail_fields_null(): void
+    {
+        $this->fakeLookup();
+
+        $result = $this->lookup(level: 1);
+
+        $this->assertNull($result->administrativeAddress);
+        $this->assertNull($result->recentHouseAddress);
+        $this->assertNull($result->buildingUseStatus);
+    }
+
+    public function test_raw_keeps_fields_the_result_does_not_map(): void
+    {
+        $this->fakeLookup([...$this->level3Data(), 'future_field' => 'kept']);
+
+        $result = $this->lookup(level: 3);
+
+        $this->assertSame('kept', $result->raw['future_field']);
+    }
+
+    #[TestWith([401, 'invalid_api_key', InvalidApiKey::class])]
+    #[TestWith([402, 'insufficient_credits', InsufficientCredits::class])]
+    #[TestWith([403, 'level_not_granted', LevelNotGranted::class])]
+    #[TestWith([429, 'rate_limit_exceeded', RateLimitExceeded::class])]
+    public function test_error_responses_throw_the_matching_exception(int $status, string $code, string $class): void
+    {
+        $this->fakeError($status, ['error' => ['code' => $code, 'message' => 'Something went wrong']]);
+
+        $e = $this->lookupException();
+
+        $this->assertInstanceOf($class, $e);
+        $this->assertSame($status, $e->httpStatus);
+        $this->assertSame($code, $e->errorCode);
+    }
+
+    public function test_rate_limit_reads_retry_after(): void
+    {
+        Http::fake(['api.postcode.gov.ng/v1/lookup*' => Http::response(
+            ['error' => ['code' => 'rate_limit_exceeded', 'message' => 'Slow down']],
+            429,
+            ['Retry-After' => '30'],
+        )]);
+
+        $e = $this->lookupException();
+
+        $this->assertInstanceOf(RateLimitExceeded::class, $e);
+        $this->assertSame(30, $e->retryAfter);
+    }
+
+    public function test_server_error_throws_nipost_unavailable(): void
+    {
+        $this->fakeError(500, ['error' => ['code' => 'internal_error', 'message' => 'Oops']]);
+
+        $e = $this->lookupException();
+
+        $this->assertInstanceOf(NipostUnavailable::class, $e);
+        $this->assertSame(500, $e->httpStatus);
+    }
+
+    public function test_timeout_throws_nipost_unavailable(): void
+    {
+        Http::fake(fn () => throw new ConnectionException('Timed out'));
+
+        $e = $this->lookupException();
+
+        $this->assertInstanceOf(NipostUnavailable::class, $e);
+        $this->assertSame(0, $e->httpStatus);
+        $this->assertInstanceOf(ConnectionException::class, $e->getPrevious());
+    }
+
+    public function test_non_json_error_body_still_throws_the_matching_exception(): void
+    {
+        $this->fakeError(402, '<html><body>Payment Required</body></html>');
+
+        $e = $this->lookupException();
+
+        $this->assertInstanceOf(InsufficientCredits::class, $e);
+        $this->assertSame(402, $e->httpStatus);
+        $this->assertNull($e->errorCode);
+    }
+
+    public function test_403_with_another_code_throws_a_plain_nipost_exception(): void
+    {
+        $this->fakeError(403, ['error' => ['code' => 'scope_not_granted', 'message' => 'Scope not granted']]);
+
+        $e = $this->lookupException();
+
+        $this->assertSame(NipostException::class, $e::class);
+        $this->assertSame(403, $e->httpStatus);
+        $this->assertSame('scope_not_granted', $e->errorCode);
+    }
+
+    public function test_200_with_html_body_throws_instead_of_returning_an_invalid_result(): void
+    {
+        $this->fakeError(200, '<html><body>Welcome to nginx!</body></html>');
+
+        $e = $this->lookupException();
+
+        $this->assertSame(NipostException::class, $e::class);
+        $this->assertSame(200, $e->httpStatus);
+    }
+
+    public function test_200_without_a_data_array_throws(): void
+    {
+        $this->fakeError(200, ['data' => 'not-an-array']);
+
+        $this->assertSame(NipostException::class, $this->lookupException()::class);
+    }
+
+    public function test_non_array_administrative_address_is_treated_as_missing(): void
+    {
+        $this->fakeLookup([...$this->level3Data(), 'administrative_address' => 'Abuja']);
+
+        $this->assertNull($this->lookup(level: 3)->administrativeAddress);
     }
 
     public function test_client_resolves_from_the_container(): void
