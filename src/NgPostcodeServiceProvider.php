@@ -20,6 +20,12 @@ final class NgPostcodeServiceProvider extends ServiceProvider
                 baseUrl: config('ng-postcode.base_url'),
                 timeout: config('ng-postcode.timeout'),
                 maxLevel: config('ng-postcode.max_level'),
+                // filter_var so a string like "false" or "0" also turns caching off.
+                cache: filter_var(config('ng-postcode.cache.enabled', true), FILTER_VALIDATE_BOOL)
+                    ? $app['cache']->store()
+                    : null,
+                referenceTtl: (int) config('ng-postcode.cache.reference_ttl', 86400),
+                lookupTtl: (int) config('ng-postcode.cache.lookup_ttl', 3600),
             );
         });
     }

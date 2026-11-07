@@ -16,6 +16,8 @@ use EmmanuelKolawole\NgPostcode\Exceptions\RateLimitExceeded;
 use EmmanuelKolawole\NgPostcode\NgPostcodeServiceProvider;
 use EmmanuelKolawole\NgPostcode\Postcode;
 use EmmanuelKolawole\NgPostcode\State;
+use Illuminate\Cache\ArrayStore;
+use Illuminate\Cache\Repository as CacheRepository;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
@@ -39,9 +41,12 @@ final class NipostClientTest extends TestCase
         Http::preventStrayRequests();   // any un-faked request fails the test
     }
 
-    private function client(?string $apiKey = 'test-key', int $maxLevel = 1): NipostClient
+    /** With $cached, each call gets its own fresh in-memory cache, so tests can't leak into each other. */
+    private function client(?string $apiKey = 'test-key', int $maxLevel = 1, bool $cached = false): NipostClient
     {
-        return new NipostClient($apiKey, 'https://api.postcode.gov.ng', 5, $maxLevel);
+        $cache = $cached ? new CacheRepository(new ArrayStore) : null;
+
+        return new NipostClient($apiKey, 'https://api.postcode.gov.ng', 5, $maxLevel, $cache);
     }
 
     /** A level 3 lookup response, shaped like the quickstart example in NIPOST's docs. */
@@ -391,5 +396,166 @@ final class NipostClientTest extends TestCase
     public function test_client_resolves_from_the_container(): void
     {
         $this->assertInstanceOf(NipostClient::class, app(NipostClient::class));
+    }
+
+    // --- Caching ---
+
+    public function test_cached_lookup_sends_one_request_for_two_calls(): void
+    {
+        $this->fakeLookup();
+        $client = $this->client(cached: true);
+
+        $first = $client->lookup(Postcode::parse(self::SANDBOX_CODE));
+        $second = $client->lookup(Postcode::parse(self::SANDBOX_CODE));
+
+        Http::assertSentCount(1);
+        $this->assertEquals($first, $second);
+    }
+
+    public function test_uncached_lookup_sends_a_request_for_every_call(): void
+    {
+        $this->fakeLookup();
+        $client = $this->client(cached: false);
+
+        $client->lookup(Postcode::parse(self::SANDBOX_CODE));
+        $client->lookup(Postcode::parse(self::SANDBOX_CODE));
+
+        Http::assertSentCount(2);
+    }
+
+    public function test_cached_reference_calls_send_one_request_each(): void
+    {
+        $this->fakeReference();
+        $client = $this->client(cached: true);
+
+        foreach ([1, 2] as $_) {
+            $this->assertSame(['01' => 'Abaji', '02' => 'Abuja Municipal'], $client->lgas(State::FCT));
+            $this->assertSame(['A01', 'A02'], $client->districts(State::FCT, '01'));
+            $this->assertSame(['AA', 'AB'], $client->areas(State::FCT, '01', 'A01'));
+        }
+
+        Http::assertSentCount(3);
+    }
+
+    public function test_lga_name_reuses_the_cached_lgas(): void
+    {
+        $this->fakeReference();
+        $client = $this->client(cached: true);
+
+        $client->lgaName(Postcode::parse('FC-01-A01-KP-27'));
+        $client->lgaName(Postcode::parse('FC-02-A01-KP-27'));
+
+        Http::assertSentCount(1);
+    }
+
+    public function test_lookup_levels_are_cached_separately(): void
+    {
+        $this->fakeLookup($this->level3Data());
+        $client = $this->client(maxLevel: 3, cached: true);
+        $postcode = Postcode::parse(self::SANDBOX_CODE);
+
+        $client->lookup($postcode, level: 1);
+        $client->lookup($postcode, level: 3);
+        Http::assertSentCount(2);
+
+        $client->lookup($postcode, level: 1);
+        $client->lookup($postcode, level: 3);
+        Http::assertSentCount(2);
+    }
+
+    public function test_errors_are_not_cached(): void
+    {
+        Http::fake([
+            'api.postcode.gov.ng/v1/lookup*' => Http::sequence()
+                ->push(['error' => ['code' => 'internal_error', 'message' => 'Oops']], 500)
+                ->push(['data' => ['postcode' => self::SANDBOX_CODE, 'valid' => true, 'status' => 'active']]),
+        ]);
+        $client = $this->client(cached: true);
+
+        try {
+            $client->lookup(Postcode::parse(self::SANDBOX_CODE));
+            $this->fail('Expected NipostUnavailable to be thrown.');
+        } catch (NipostUnavailable) {
+            // expected
+        }
+
+        $result = $client->lookup(Postcode::parse(self::SANDBOX_CODE));
+
+        $this->assertTrue($result->valid);
+        Http::assertSentCount(2);
+    }
+
+    public function test_level_check_still_applies_when_a_higher_level_is_cached(): void
+    {
+        $this->fakeLookup($this->level3Data());
+        $cache = new CacheRepository(new ArrayStore);
+        $postcode = Postcode::parse(self::SANDBOX_CODE);
+
+        (new NipostClient('test-key', 'https://api.postcode.gov.ng', 5, 3, $cache))->lookup($postcode, level: 3);
+
+        $this->expectException(LookupLevelNotAllowed::class);
+        (new NipostClient('test-key', 'https://api.postcode.gov.ng', 5, 1, $cache))->lookup($postcode, level: 3);
+    }
+
+    public function test_provider_uses_the_app_cache_when_enabled(): void
+    {
+        config(['ng-postcode.api_key' => 'test-key', 'ng-postcode.cache.enabled' => true]);
+        $this->fakeLookup();
+        $client = $this->app->make(NipostClient::class);
+
+        $client->lookup(Postcode::parse(self::SANDBOX_CODE));
+        $client->lookup(Postcode::parse(self::SANDBOX_CODE));
+
+        Http::assertSentCount(1);
+
+        $fingerprint = substr(hash('sha256', 'test-key'), 0, 12);
+        $this->assertTrue(cache()->has("ng-postcode:{$fingerprint}:lookup:" . self::SANDBOX_CODE . ':1'));
+    }
+
+    public function test_different_api_keys_do_not_share_cache_entries(): void
+    {
+        $this->fakeLookup();
+        $cache = new CacheRepository(new ArrayStore);
+        $postcode = Postcode::parse(self::SANDBOX_CODE);
+
+        $testClient = new NipostClient('test-key', 'https://api.postcode.gov.ng', 5, 1, $cache);
+        $liveClient = new NipostClient('live-key', 'https://api.postcode.gov.ng', 5, 1, $cache);
+
+        $testClient->lookup($postcode);
+        $liveClient->lookup($postcode);
+        Http::assertSentCount(2);
+
+        // Each key still hits its own cache entry.
+        $testClient->lookup($postcode);
+        $liveClient->lookup($postcode);
+        Http::assertSentCount(2);
+
+        Http::assertSent(fn (Request $request) => $request->hasHeader('X-API-Key', 'live-key'));
+    }
+
+    public function test_cache_keys_do_not_contain_the_api_key(): void
+    {
+        config(['ng-postcode.api_key' => 'secret-live-key', 'ng-postcode.cache.enabled' => true]);
+        $this->fakeLookup();
+
+        $this->app->make(NipostClient::class)->lookup(Postcode::parse(self::SANDBOX_CODE));
+
+        $keys = array_keys((fn () => $this->storage)->call(cache()->getStore()));
+        $this->assertNotEmpty($keys);
+        foreach ($keys as $key) {
+            $this->assertStringNotContainsString('secret-live-key', $key);
+        }
+    }
+
+    public function test_provider_skips_the_cache_when_disabled(): void
+    {
+        config(['ng-postcode.api_key' => 'test-key', 'ng-postcode.cache.enabled' => 'false']);
+        $this->fakeLookup();
+        $client = $this->app->make(NipostClient::class);
+
+        $client->lookup(Postcode::parse(self::SANDBOX_CODE));
+        $client->lookup(Postcode::parse(self::SANDBOX_CODE));
+
+        Http::assertSentCount(2);
     }
 }

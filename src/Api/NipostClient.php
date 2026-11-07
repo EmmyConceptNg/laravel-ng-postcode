@@ -2,6 +2,7 @@
 
 namespace EmmanuelKolawole\NgPostcode\Api;
 
+use Closure;
 use EmmanuelKolawole\NgPostcode\Exceptions\LookupLevelNotAllowed;
 use EmmanuelKolawole\NgPostcode\Exceptions\MissingApiKey;
 use EmmanuelKolawole\NgPostcode\Postcode;
@@ -15,6 +16,7 @@ use EmmanuelKolawole\NgPostcode\Exceptions\NipostException;
 use EmmanuelKolawole\NgPostcode\Exceptions\NipostUnavailable;
 use EmmanuelKolawole\NgPostcode\Exceptions\RateLimitExceeded;
 use EmmanuelKolawole\NgPostcode\State;
+use Illuminate\Contracts\Cache\Repository;
 use Illuminate\Http\Client\Response;
 use Illuminate\Http\Client\ConnectionException;
 
@@ -25,6 +27,9 @@ final class NipostClient
         private readonly string $baseUrl,
         private readonly int $timeout,
         private readonly int $maxLevel,
+        private readonly ?Repository $cache = null,
+        private readonly int $referenceTtl = 86400,
+        private readonly int $lookupTtl = 3600,
     ) {}
 
     /**
@@ -43,10 +48,17 @@ final class NipostClient
             throw LookupLevelNotAllowed::forLevel($level, $this->maxLevel);
         }
 
-        $data = $this->send('/v1/lookup', [
-            'code' => $postcode->canonical(),
-            'level' => $level,
-        ], $level);
+        // The level checks above stay outside the cache, so lowering max_level
+        // can't be bypassed by a result cached at a higher level. The raw array
+        // is cached rather than the LookupResult object.
+        $data = $this->remember(
+            "lookup:{$postcode->canonical()}:{$level}",
+            $this->lookupTtl,
+            fn () => $this->send('/v1/lookup', [
+                'code' => $postcode->canonical(),
+                'level' => $level,
+            ], $level),
+        );
 
         return LookupResult::fromArray($data);
     }
@@ -82,6 +94,32 @@ final class NipostClient
         }
 
         return $data;
+    }
+
+    /**
+     * Returns the cached value for the key, or runs the callback and caches it.
+     * If the callback throws, nothing is stored, so errors are never cached.
+     *
+     * Keys include a short fingerprint of the API key, so switching from a test
+     * key to a live key never serves sandbox answers from the cache. It is a hash
+     * because cache key names can be inspected and must not contain the real key.
+     *
+     * @template T
+     * @param  Closure(): T  $callback
+     * @return T
+     */
+    private function remember(string $key, int $ttl, Closure $callback): mixed
+    {
+        if ($this->cache === null) {
+            return $callback();
+        }
+
+        return $this->cache->remember("ng-postcode:{$this->keyFingerprint()}:{$key}", $ttl, $callback);
+    }
+
+    private function keyFingerprint(): string
+    {
+        return substr(hash('sha256', (string) $this->apiKey), 0, 12);
     }
 
     private function exceptionFor(Response $response, int $level): NipostException
@@ -130,40 +168,42 @@ final class NipostClient
     /** @return array<string, string> code => name, e.g. ['01' => 'Abaji', ...] */
     public function lgas(State $state): array
     {
-        $data = $this->send('/v1/reference/lgas', [
-            'state' => $state->value,
-        ]);
+        return $this->remember("lgas:{$state->value}", $this->referenceTtl, function () use ($state) {
+            $data = $this->send('/v1/reference/lgas', ['state' => $state->value]);
 
-        return collect($data['lgas'] ?? [])
-            ->pluck('name', 'code')
-            ->all();
+            return collect($data['lgas'] ?? [])->pluck('name', 'code')->all();
+        });
     }
 
     /** @return list<string> district codes, e.g. ['A01', 'A02', ...] */
     public function districts(State $state, string $lga): array
     {
-        $data = $this->send('/v1/reference/districts', [
-            'state' => $state->value,
-            'lga' => $lga,
-        ]);
+        return $this->remember("districts:{$state->value}:{$lga}", $this->referenceTtl, function () use ($state, $lga) {
+            $data = $this->send('/v1/reference/districts', [
+                'state' => $state->value,
+                'lga' => $lga,
+            ]);
 
-        return collect($data['districts'] ?? [])
-            ->pluck('code')
-            ->all();
+            return collect($data['districts'] ?? [])
+                ->pluck('code')
+                ->all();
+        });
     }
 
     /** @return list<string> area codes */
     public function areas(State $state, string $lga, string $district): array
     {
-        $data = $this->send('/v1/reference/areas', [
-            'state' => $state->value,
-            'lga' => $lga,
-            'district' => $district,
-        ]);
+        return $this->remember("areas:{$state->value}:{$lga}:{$district}", $this->referenceTtl, function () use ($state, $lga, $district) {
+            $data = $this->send('/v1/reference/areas', [
+                'state' => $state->value,
+                'lga' => $lga,
+                'district' => $district,
+            ]);
 
-        return collect($data['areas'] ?? [])
-            ->pluck('code')
-            ->all();
+            return collect($data['areas'] ?? [])
+                ->pluck('code')
+                ->all();
+        });
     }
 
     /** Convenience: the LGA name for a postcode, or null if NIPOST doesn't list it. */
