@@ -74,7 +74,7 @@ $postcode->building;         // "01"
 $postcode->state === State::Ekiti;   // true
 ```
 
-`label()` gives you a human-readable name, for example `"Akwa Ibom"`, `"Cross River"` or `"FCT, Abuja"`.
+`label()` gives you a human-readable name, for example `"Akwa Ibom"`, `"Cross River"` or `"Federal Capital Territory"`.
 
 ### Validation rule
 

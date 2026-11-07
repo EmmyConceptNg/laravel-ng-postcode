@@ -47,7 +47,7 @@ enum State: string
         return match ($this) {
             self::AkwaIbom => 'Akwa Ibom',
             self::CrossRiver => 'Cross River',
-            self::FCT => 'FCT, Abuja',
+            self::FCT => 'Federal Capital Territory',
             default => $this->name,
         };
     }

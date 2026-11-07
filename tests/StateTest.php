@@ -65,10 +65,6 @@ final class StateTest extends TestCase
     public function test_labels_match_the_official_nipost_names(): void
     {
         foreach (self::NIPOST_STATES as $code => $name) {
-            if ($code === 'FC') {
-                continue; // label() deliberately says "FCT, Abuja"
-            }
-
             $this->assertSame($name, State::from($code)->label(), "Label for $code");
         }
     }

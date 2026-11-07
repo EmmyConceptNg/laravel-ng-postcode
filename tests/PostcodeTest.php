@@ -98,7 +98,7 @@ final class PostcodeTest extends TestCase
             'plain name'  => [State::Lagos, 'Lagos'],
             'Akwa Ibom'   => [State::AkwaIbom, 'Akwa Ibom'],
             'Cross River' => [State::CrossRiver, 'Cross River'],
-            'FCT'         => [State::FCT, 'FCT, Abuja'],
+            'FCT'         => [State::FCT, 'Federal Capital Territory'],
         ];
     }
 
