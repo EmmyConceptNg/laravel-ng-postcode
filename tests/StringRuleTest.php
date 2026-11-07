@@ -5,6 +5,7 @@ namespace EmmanuelKolawole\NgPostcode\Tests;
 use EmmanuelKolawole\NgPostcode\NgPostcodeServiceProvider;
 use Illuminate\Support\Facades\Validator;
 use Orchestra\Testbench\TestCase;
+use ValueError;
 
 final class StringRuleTest extends TestCase
 {
@@ -56,5 +57,11 @@ final class StringRuleTest extends TestCase
             'The delivery postcode must be a valid Nigerian postcode.',
             $validator->errors()->first('delivery_postcode'),
         );
+    }
+
+    public function test_unknown_state_parameter_throws(): void
+    {
+        $this->expectException(ValueError::class);
+        Validator::make(['postcode' => 'LA-01-A03-FK-01'], ['postcode' => 'ng_postcode:LG'])->passes();
     }
 }
