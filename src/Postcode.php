@@ -68,6 +68,22 @@ final class Postcode
 
     public function canonical(): string
     {
-        return implode('-', [$this->state->value, $this->lga, $this->district, $this->area, $this->building]);
+        return implode('-', $this->segments());
+    }
+
+    public function compact(): string
+    {
+        return implode('', $this->segments());
+    }
+
+    public function spaced(): string
+    {
+        return implode(' ', $this->segments());
+    }
+
+    /** @return list<string> */
+    private function segments(): array
+    {
+        return [$this->state->value, $this->lga, $this->district, $this->area, $this->building];
     }
 }

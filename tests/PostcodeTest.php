@@ -107,4 +107,13 @@ final class PostcodeTest extends TestCase
     {
         $this->assertSame($expected, $state->label());
     }
+
+    public function test_output_formats(): void
+    {
+        $postcode = Postcode::parse('ek01a03fk01');
+
+        $this->assertSame('EK-01-A03-FK-01', $postcode->canonical());
+        $this->assertSame('EK01A03FK01', $postcode->compact());
+        $this->assertSame('EK 01 A03 FK 01', $postcode->spaced());
+    }
 }
