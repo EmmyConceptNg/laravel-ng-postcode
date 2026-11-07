@@ -12,7 +12,9 @@
   "require": {
     "php": "^8.2",
     "illuminate/contracts": "^12.0|^13.0",
-    "illuminate/support": "^12.0|^13.0"
+    "illuminate/http": "^12.0|^13.0",
+    "illuminate/support": "^12.0|^13.0",
+    "illuminate/validation": "^12.0|^13.0"
   },
   "autoload": {
     "psr-4": {
@@ -21,7 +23,6 @@
   },
   "require-dev": {
     "phpunit/phpunit": "^11.5|^12.0|^13.0",
-    "illuminate/validation": "^12.0|^13.0",
     "illuminate/translation": "^12.0|^13.0",
     "orchestra/testbench": "^10.0|^11.0"
   },
@@ -34,7 +35,10 @@
     "laravel": {
       "providers": [
         "EmmanuelKolawole\\NgPostcode\\NgPostcodeServiceProvider"
-      ]
+      ],
+      "aliases": {
+        "NgPostcode": "EmmanuelKolawole\\NgPostcode\\Facades\\NgPostcode"
+      }
     }
   }
 }
