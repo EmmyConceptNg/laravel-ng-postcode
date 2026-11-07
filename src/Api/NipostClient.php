@@ -14,6 +14,7 @@ use EmmanuelKolawole\NgPostcode\Exceptions\LevelNotGranted;
 use EmmanuelKolawole\NgPostcode\Exceptions\NipostException;
 use EmmanuelKolawole\NgPostcode\Exceptions\NipostUnavailable;
 use EmmanuelKolawole\NgPostcode\Exceptions\RateLimitExceeded;
+use EmmanuelKolawole\NgPostcode\State;
 use Illuminate\Http\Client\Response;
 use Illuminate\Http\Client\ConnectionException;
 
@@ -123,5 +124,51 @@ final class NipostClient
             ->withHeaders(['X-API-Key' => $this->apiKey])
             ->timeout($this->timeout)
             ->acceptJson();
+    }
+
+
+    /** @return array<string, string> code => name, e.g. ['01' => 'Abaji', ...] */
+    public function lgas(State $state): array
+    {
+        $data = $this->send('/v1/reference/lgas', [
+            'state' => $state->value,
+        ]);
+
+        return collect($data['lgas'] ?? [])
+            ->pluck('name', 'code')
+            ->all();
+    }
+
+    /** @return list<string> district codes, e.g. ['A01', 'A02', ...] */
+    public function districts(State $state, string $lga): array
+    {
+        $data = $this->send('/v1/reference/districts', [
+            'state' => $state->value,
+            'lga' => $lga,
+        ]);
+
+        return collect($data['districts'] ?? [])
+            ->pluck('code')
+            ->all();
+    }
+
+    /** @return list<string> area codes */
+    public function areas(State $state, string $lga, string $district): array
+    {
+        $data = $this->send('/v1/reference/areas', [
+            'state' => $state->value,
+            'lga' => $lga,
+            'district' => $district,
+        ]);
+
+        return collect($data['areas'] ?? [])
+            ->pluck('code')
+            ->all();
+    }
+
+    /** Convenience: the LGA name for a postcode, or null if NIPOST doesn't list it. */
+    public function lgaName(Postcode $postcode): ?string
+    {
+        return $this->lgas($postcode->state)[$postcode->lga] ?? null;
     }
 }

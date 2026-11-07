@@ -15,6 +15,7 @@ use EmmanuelKolawole\NgPostcode\Exceptions\NipostUnavailable;
 use EmmanuelKolawole\NgPostcode\Exceptions\RateLimitExceeded;
 use EmmanuelKolawole\NgPostcode\NgPostcodeServiceProvider;
 use EmmanuelKolawole\NgPostcode\Postcode;
+use EmmanuelKolawole\NgPostcode\State;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
@@ -301,6 +302,90 @@ final class NipostClientTest extends TestCase
         $this->fakeLookup([...$this->level3Data(), 'administrative_address' => 'Abuja']);
 
         $this->assertNull($this->lookup(level: 3)->administrativeAddress);
+    }
+
+    /** Fakes the three reference endpoints with the shapes NIPOST returns. */
+    private function fakeReference(): void
+    {
+        Http::fake([
+            'api.postcode.gov.ng/v1/reference/lgas*' => Http::response([
+                'data' => ['lgas' => [
+                    ['code' => '01', 'name' => 'Abaji'],
+                    ['code' => '02', 'name' => 'Abuja Municipal'],
+                ]],
+            ]),
+            'api.postcode.gov.ng/v1/reference/districts*' => Http::response([
+                'data' => ['districts' => [
+                    ['code' => 'A01'],
+                    ['code' => 'A02'],
+                ]],
+            ]),
+            'api.postcode.gov.ng/v1/reference/areas*' => Http::response([
+                'data' => ['areas' => [
+                    ['code' => 'AA'],
+                    ['code' => 'AB'],
+                ]],
+            ]),
+        ]);
+    }
+
+    public function test_lgas_sends_the_state_and_returns_code_to_name(): void
+    {
+        $this->fakeReference();
+
+        $lgas = $this->client()->lgas(State::FCT);
+
+        $this->assertSame(['01' => 'Abaji', '02' => 'Abuja Municipal'], $lgas);
+
+        Http::assertSent(
+            fn (Request $request) => str_contains($request->url(), '/v1/reference/lgas')
+                && $request['state'] === 'FC'
+        );
+    }
+
+    public function test_districts_sends_state_and_lga_and_returns_a_list_of_codes(): void
+    {
+        $this->fakeReference();
+
+        $districts = $this->client()->districts(State::FCT, '01');
+
+        $this->assertSame(['A01', 'A02'], $districts);
+
+        Http::assertSent(
+            fn (Request $request) => str_contains($request->url(), '/v1/reference/districts')
+                && $request['state'] === 'FC'
+                && $request['lga'] === '01'
+        );
+    }
+
+    public function test_areas_sends_state_lga_and_district_and_returns_a_list_of_codes(): void
+    {
+        $this->fakeReference();
+
+        $areas = $this->client()->areas(State::FCT, '01', 'A01');
+
+        $this->assertSame(['AA', 'AB'], $areas);
+
+        Http::assertSent(
+            fn (Request $request) => str_contains($request->url(), '/v1/reference/areas')
+                && $request['state'] === 'FC'
+                && $request['lga'] === '01'
+                && $request['district'] === 'A01'
+        );
+    }
+
+    public function test_lga_name_returns_the_name_for_a_listed_lga(): void
+    {
+        $this->fakeReference();
+
+        $this->assertSame('Abaji', $this->client()->lgaName(Postcode::parse('FC-01-A01-KP-27')));
+    }
+
+    public function test_lga_name_returns_null_for_an_unlisted_lga(): void
+    {
+        $this->fakeReference();
+
+        $this->assertNull($this->client()->lgaName(Postcode::parse('FC-09-A01-KP-27')));
     }
 
     public function test_client_resolves_from_the_container(): void
